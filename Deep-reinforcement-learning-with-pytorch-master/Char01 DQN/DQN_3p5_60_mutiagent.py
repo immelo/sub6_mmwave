@@ -28,7 +28,8 @@ data = dataset['dataset']
 state_channel_space = data['inpVal']
 state_loc_space = data['valInpLoc']
 #动作空间是64个码本码字
-action_space = range(64)
+action_space = torch.LongTensor(np.arange(64))
+action_space_onehot = torch.nn.functional.one_hot(action_space, 64)
 #奖励空间是64个码字对应的速率
 reward_space = data['codebookVal']
 label_space = data['labelval']
@@ -44,7 +45,7 @@ class Net(nn.Module):
     """docstring for Net"""
     def __init__(self):
         super(Net, self).__init__()
-        self.fc1 = nn.Linear(261, 2048)
+        self.fc1 = nn.Linear(324, 2048)
         self.fc1.weight.data.normal_(0,0.1)
         self.fc2 = nn.Linear(2048,2048)
         self.fc2.weight.data.normal_(0,0.1)
@@ -81,14 +82,14 @@ class DQN():
 
         self.learn_step_counter = 0
         self.memory_counter = 0
-        self.memory = np.zeros((MEMORY_CAPACITY, 261 * 2 + 2))
+        self.memory = np.zeros((MEMORY_CAPACITY, 324 * 2 + 65))
         # why the NUM_STATE*2 +2
         # When we store the memory, we put the state, action, reward and next_state in the memory
         # here reward and action is a number, state is a ndarray
         # evel_net_optim = torch.optim.Adam(self.eval_net.parameters(), lr=LR)
         # self.optimizer = torch.optim.lr_scheduler.MultiStepLR(evel_net_optim, milestones=[20000,30000,40000] , gamma= 0.5)
-        # self.optimizer = torch.optim.Adam(self.eval_net.parameters(), lr=LR)
-        self.optimizer = torch.optim.SGD(self.eval_net.parameters(), lr=LR, momentum=0.9)
+        self.optimizer = torch.optim.Adam(self.eval_net.parameters(), lr=LR)
+        # self.optimizer = torch.optim.SGD(self.eval_net.parameters(), lr=LR, momentum=0.9)
         self.loss_func = nn.MSELoss().cuda()
 
     def choose_action(self, state):
@@ -107,7 +108,7 @@ class DQN():
 
 
     def store_transition(self, state, action, reward, next_state):
-        action_reward = np.vstack((action, reward)).reshape(1,2)
+        action_reward = np.hstack((action, reward)).reshape(1,65)
         transition = np.hstack((state, action_reward, next_state))
         index = self.memory_counter % MEMORY_CAPACITY
         self.memory[index, :] = transition
@@ -123,10 +124,10 @@ class DQN():
         #sample batch from memory
         sample_index = np.random.choice(MEMORY_CAPACITY, BATCH_SIZE)
         batch_memory = self.memory[sample_index, :]
-        batch_state = Variable(torch.FloatTensor(batch_memory[:, :261])).cuda(0)
-        batch_action = Variable(torch.LongTensor(batch_memory[:, 261:262].astype(int))).cuda(0)
-        batch_reward = Variable(torch.FloatTensor(batch_memory[:, 262:263])).cuda(0)
-        batch_next_state = Variable(torch.FloatTensor(batch_memory[:,-261:])).cuda(0)
+        batch_state = Variable(torch.FloatTensor(batch_memory[:, :324])).cuda(0)
+        batch_action = Variable(torch.LongTensor(batch_memory[:, 324:388].astype(int))).cuda(0)
+        batch_reward = Variable(torch.FloatTensor(batch_memory[:, 388:389])).cuda(0)
+        batch_next_state = Variable(torch.FloatTensor(batch_memory[:,-324:])).cuda(0)
 
         #q_eval
         q_eval = self.eval_net(batch_state).gather(1, batch_action)
@@ -140,15 +141,20 @@ class DQN():
         self.optimizer.step()
         return loss
 
-def reward_func(index_user, action, best_reward):
-    reward = reward_space[action, int(index_user)] - best_reward
-
+def reward_func(index_user, reward_space_num, action):
+    reward = reward_space_num[int(index_user)][action]
     return reward
 
-def store_transition_and_learn(i, dqn_num, state, index_user, ob_zero, ep_reward, best_reward, num_action, agent_num):
-    action = dqn_num.choose_action(state)
-    reward = reward_func(index_user, action, best_reward)
-    reaction_now = np.vstack((action, reward)).reshape(1,2)
+def minmaxscaler(data):
+    min = np.amin(data)
+    max = np.amax(data)
+    return (data - min)/(max -min)
+
+def store_transition_and_learn(i, dqn_num, reward_space_num, state, index_user, ob_zero, ep_reward, num_action, agent_num):
+    action_index = dqn_num.choose_action(state)
+    action = action_space_onehot[action_index]
+    reward = reward_func(index_user, reward_space_num, action_index)
+    reaction_now = np.hstack((action, reward)).reshape(1,65)
     next_state =  np.hstack((ob_zero, reaction_now))
 
     dqn_num.store_transition(state, action, reward, next_state)
@@ -161,7 +167,7 @@ def store_transition_and_learn(i, dqn_num, state, index_user, ob_zero, ep_reward
     num_action -= 1
     return num_action, ep_reward, state
 
-def process_every_network(process_num, dqn_num, state_loc_space_num, state_channel_space_num, reward_space_num, label_space_num, reward_list_num, regret_list_num):
+def process_every_network(process_num, dqn_num, state_loc_space_num, state_channel_space_num, reward_space_num, label_space_num, reward_list_num):
     # episodes = 500
     # NUM_STATES_sublist = len(state_loc_space_num)
     for i in range(500):
@@ -169,17 +175,22 @@ def process_every_network(process_num, dqn_num, state_loc_space_num, state_chann
             loc_zero = state_loc_space_num[index_user].reshape(1,3)
             channel_zero = state_channel_space_num[index_user].reshape(1,256)
             ob_zero = np.hstack((loc_zero, channel_zero))
-            action_zero = np.random.randint(0,NUM_ACTIONS)
-            best_reward = max_reward_space[:,index_user][0]
-            reward_zero = reward_space_num[index_user][action_zero] - best_reward
-            reaction_zero = np.vstack((action_zero, reward_zero)).reshape(1,2)
-            state = np.hstack((ob_zero,reaction_zero))
+
+            action_zero_index = np.random.randint(0,NUM_ACTIONS)
+            action_zero = action_space_onehot[action_zero_index]
+
+            best_reward_index = int(label_space_num[index_user][0])
+            best_reward = reward_space_num[index_user][best_reward_index]
+ 
+            reward_zero = reward_space_num[index_user][action_zero_index]
+            reaction_zero = np.hstack((action_zero, reward_zero)).reshape(1,65)
+            state = np.hstack((ob_zero, reaction_zero))
             # state = [ob_zero, action_zero, reward_zero]
             ep_reward = 0
             num_action = 3
             
             while num_action > 0:
-                num_action, ep_reward, state = store_transition_and_learn(i, dqn_num, state, index_user, ob_zero, ep_reward, best_reward, num_action, agent_num =process_num)
+                num_action, ep_reward, state = store_transition_and_learn(i, dqn_num, reward_space_num, state, index_user, ob_zero, ep_reward, num_action, agent_num =process_num)
                 r = copy.copy(ep_reward)
                 reward_list_num.append(r)      
 
@@ -214,17 +225,20 @@ def main():
                 globals()['reward_space_' + str(i)].append(reward_space[:,index_user])
                 globals()['label_space_' + str(i)].append(label_space[:,index_user])
     
-    # arg_list = [(0, dqn_0, state_loc_space_0, state_channel_space_0, reward_space_0, label_space_0, reward_list_0, regret_list_0),
-    #             (1, dqn_1, state_loc_space_1, state_channel_space_1, reward_space_1, label_space_1, reward_list_1, regret_list_1),
-    #             (2, dqn_2, state_loc_space_2, state_channel_space_2, reward_space_2, label_space_2, reward_list_2, regret_list_2),
-    #             (3, dqn_3, state_loc_space_3, state_channel_space_3, reward_space_3, label_space_3, reward_list_3, regret_list_3),
-    #             (4, dqn_4, state_loc_space_4, state_channel_space_4, reward_space_4, label_space_4, reward_list_4, regret_list_4),
-    #             (5, dqn_5, state_loc_space_5, state_channel_space_5, reward_space_5, label_space_5, reward_list_5, regret_list_5),
-    #             (6, dqn_6, state_loc_space_6, state_channel_space_6, reward_space_6, label_space_6, reward_list_6, regret_list_6),
-    #             (7, dqn_7, state_loc_space_7, state_channel_space_7, reward_space_7, label_space_7, reward_list_7, regret_list_7)]
+    # arg_list = [(0, dqn_0, state_loc_space_0, state_channel_space_0, reward_space_0, reward_list_0),
+    #             (1, dqn_1, state_loc_space_1, state_channel_space_1, reward_space_1, reward_list_1),
+    #             (2, dqn_2, state_loc_space_2, state_channel_space_2, reward_space_2, reward_list_2),
+    #             (3, dqn_3, state_loc_space_3, state_channel_space_3, reward_space_3, reward_list_3),
+    #             (4, dqn_4, state_loc_space_4, state_channel_space_4, reward_space_4, reward_list_4),
+    #             (5, dqn_5, state_loc_space_5, state_channel_space_5, reward_space_5, reward_list_5),
+    #             (6, dqn_6, state_loc_space_6, state_channel_space_6, reward_space_6, reward_list_6),
+    #             (7, dqn_7, state_loc_space_7, state_channel_space_7, reward_space_7, reward_list_7]
     
     print("Collecting Experience....")
-    process_every_network(6, dqn_6, state_loc_space_6, state_channel_space_6, reward_space_6, label_space_6, reward_list_6, regret_list_6)
+    for i in range(len(reward_space_6)):
+        reward_space_6[i] = minmaxscaler(reward_space_6[i])
+
+    process_every_network(6, dqn_6, state_loc_space_6, state_channel_space_6, reward_space_6, label_space_6, reward_list_6,)
   
     
     # mp.set_start_method('spawn')
