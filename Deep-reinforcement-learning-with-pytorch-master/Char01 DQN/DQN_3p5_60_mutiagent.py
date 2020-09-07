@@ -15,7 +15,7 @@ from torch.autograd import Variable
 
 # hyper-parameters
 BATCH_SIZE = 512
-LR = 0.001
+LR = 0.0001
 GAMMA = 0.90
 EPISILO = 0.9
 MEMORY_CAPACITY = 10000
@@ -78,7 +78,6 @@ class DQN():
         # self.eval_net.share_memory()
         self.target_net = self.target_net.cuda()
         # self.target_net.share_memory()
-        # print(next(self.eval_net.parameters()).is_cuda, next(self.target_net.parameters()).is_cuda)
 
         self.learn_step_counter = 0
         self.memory_counter = 0
@@ -86,9 +85,11 @@ class DQN():
         # why the NUM_STATE*2 +2
         # When we store the memory, we put the state, action, reward and next_state in the memory
         # here reward and action is a number, state is a ndarray
-        # evel_net_optim = torch.optim.Adam(self.eval_net.parameters(), lr=LR)
-        # self.optimizer = torch.optim.lr_scheduler.MultiStepLR(evel_net_optim, milestones=[20000,30000,40000] , gamma= 0.5)
+
         self.optimizer = torch.optim.Adam(self.eval_net.parameters(), lr=LR)
+        # self.optimizer = torch.optim.lr_scheduler.MultiStepLR(evel_net_optim, milestones=[20000,30000,40000] , gamma= 0.5)
+        # self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, 0.9, last_epoch=-1)
+        # self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor= 0.1, patience= 5, verbose= False, threshold=0.001, threshold_mode= 'rel')
         # self.optimizer = torch.optim.SGD(self.eval_net.parameters(), lr=LR, momentum=0.9)
         self.loss_func = nn.MSELoss().cuda()
 
@@ -132,9 +133,9 @@ class DQN():
         #q_eval
         q_eval = self.eval_net(batch_state).gather(1, batch_action)
         q_next = self.target_net(batch_next_state).detach()
-        p = q_next.max(1)
-        pp = q_next.max(1)[0]
-        ppp = q_next.max(1)[0].view(BATCH_SIZE, 1)
+        # p = q_next.max(1)
+        # pp = q_next.max(1)[0]
+        # ppp = q_next.max(1)[0].view(BATCH_SIZE, 1)
         q_target = batch_reward + GAMMA * q_next.max(1)[0].view(BATCH_SIZE, 1)
         q_eval, q_target = q_eval.cuda(), q_target.cuda()
         loss = self.loss_func(q_eval, q_target)
@@ -142,6 +143,7 @@ class DQN():
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        # self.scheduler.step(loss)
         return loss
 
 def reward_func(index_user, reward_space_num, action):
@@ -197,7 +199,8 @@ def process_every_network(process_num, dqn_num, state_loc_space_num, state_chann
             while num_action > 0:
                 num_action, ep_reward, state = store_transition_and_learn(i, dqn_num, reward_space_num, state, index_user, ob_zero, ep_reward, num_action, agent_num =process_num)
                 r = copy.copy(ep_reward)
-                reward_list_num.append(r)      
+                reward_list_num.append(r)   
+
 
 def main():
     print("preparing data....")
