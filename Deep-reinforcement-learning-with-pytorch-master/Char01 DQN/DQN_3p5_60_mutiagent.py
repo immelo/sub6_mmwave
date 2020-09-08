@@ -10,6 +10,8 @@ import scipy
 import os
 import torch.multiprocessing as mp
 import threading
+import csv
+import codecs
 from scipy.io import loadmat
 from torch.autograd import Variable
 
@@ -23,21 +25,32 @@ Q_NETWORK_ITERATION = 100
 
 dataset = h5py.File(r'F:\deepmimo\deepmimo\DeepMIMO-codes-master\DeepMIMO-codes-master\DeepMIMO_Dataset_Generation_v1.1\Sub6-Preds-mmWave-master\Sub6-Preds-mmWave-master\DeepMIMO_dataset_yrm_nonoisy_beamidmodify.mat','r')
 # dataset = loadmat(r'F:\deepmimo\deepmimo\DeepMIMO-codes-master\DeepMIMO-codes-master\DeepMIMO_Dataset_Generation_v1.1\Sub6-Preds-mmWave-master\Sub6-Preds-mmWave-master\DeepMIMO_dataset_yrm.mat')
+
+#train data
 #状态空间是76146个位置的3p5观察值,inpTrain维度是1*1*128*76146
 data = dataset['dataset']
-state_channel_space = data['inpVal']
-state_loc_space = data['valInpLoc']
+state_channel_space = data['inpTrain']
+state_loc_space = data['trainInpLoc']
 #动作空间是64个码本码字
 action_space = torch.LongTensor(np.arange(64))
-action_space_onehot = torch.nn.functional.one_hot(action_space, 64)
+# action_space_onehot = torch.nn.functional.one_hot(action_space, 64)
 #奖励空间是64个码字对应的速率
-reward_space = data['codebookVal']
-label_space = data['labelval']
-max_reward_space = data['maxRateVal']
+reward_space = data['codebookTrain']
+label_space = data['labeltrain']
+
+#test data
+state_channel_space_val = data['inpVal']
+state_loc_space_val = data['valInpLoc']
+action_space_val = torch.LongTensor(np.arange(64))
+# action_space_onehot_val = torch.nn.functional.one_hot(action_space, 64)
+reward_space_val = data['codebookVal']
+label_space_val = data['labelval']
+
 # env = gym.make("CartPole-v0")
 # env = env.unwrapped
 NUM_ACTIONS = 63
-NUM_STATES = state_channel_space.shape[0]
+NUM_STATES_train = state_channel_space.shape[0]
+NUM_STATES_val = state_channel_space_val.shape[0]
 
 #ENV_A_SHAPE = 0 if isinstance(env.action_space.sample(), int) else env.action_space.sample.shape
 
@@ -169,14 +182,16 @@ def store_transition_and_learn(i, dqn_num, reward_space_num, state, index_user, 
     if dqn_num.memory_counter >= MEMORY_CAPACITY:
         learnning_loss = dqn_num.learn()
         print(" episodes:{}, agent: {} , ep_reward {}, loss {}".format(i, agent_num, round(ep_reward, 3), learnning_loss))
+        a = learnning_loss.cpu().data.numpy()
+        Loss_list.append(a)
     state = next_state
     num_action -= 1
     return num_action, ep_reward, state
 
 def process_every_network(process_num, dqn_num, state_loc_space_num, state_channel_space_num, reward_space_num, label_space_num, reward_list_num):
-    # episodes = 500
+    episodes = 10
     # NUM_STATES_sublist = len(state_loc_space_num)
-    for i in range(500):
+    for i in range(episodes):
         for index_user in range(len(state_loc_space_num)):
             loc_zero = state_loc_space_num[index_user].reshape(1,3)
             channel_zero = state_channel_space_num[index_user].reshape(1,256)
@@ -205,6 +220,7 @@ def process_every_network(process_num, dqn_num, state_loc_space_num, state_chann
 def main():
     print("preparing data....")
     class_list = np.arange(64)
+    globals()['Loss_list'] = []
     for i in range(8):
         globals()['dqn_' + str(i)] = DQN()
         globals()['reward_list_' + str(i)] = []
@@ -212,13 +228,16 @@ def main():
         class_label_index = np.random.choice(len(class_list) , 8, replace=False)
         globals()['class_list_' + str(i)] = class_list[class_label_index]
         class_list = np.delete(class_list, class_label_index)
-        # globals()['class_list_' + str(i)] = np.arange(8) + 1 + i*8
         globals()['state_loc_space_' + str(i)] = []
         globals()['state_channel_space_' + str(i)] = []
         globals()['reward_space_' + str(i)] = []
         globals()['label_space_' + str(i)] = []
+        globals()['state_loc_space_val_' + str(i)] = []
+        globals()['state_channel_space_val_' + str(i)] = []
+        globals()['reward_space_val_' + str(i)] = []
+        globals()['label_space_val_' + str(i)] = []
 
-    for index_user in range(NUM_STATES):
+    for index_user in range(NUM_STATES_train):
         class_index = label_space[:, index_user]
         for i in range(8):
             if class_index in globals()['class_list_' + str(i)]:
@@ -227,6 +246,15 @@ def main():
                 globals()['reward_space_' + str(i)].append(reward_space[:,index_user])
                 globals()['label_space_' + str(i)].append(label_space[:,index_user])
     
+    for index_user in range(NUM_STATES_val):
+        class_index = label_space_val[:, index_user]
+        for i in range(8):
+            if class_index in globals()['class_list_' + str(i)]:
+                globals()['state_loc_space_val_' + str(i)].append(state_loc_space_val[index_user,:])
+                globals()['state_channel_space_val_' + str(i)].append(state_channel_space_val[index_user,:])
+                globals()['reward_space_val_' + str(i)].append(reward_space_val[:,index_user])
+                globals()['label_space_val_' + str(i)].append(label_space_val[:,index_user])
+
     # arg_list = [(0, dqn_0, state_loc_space_0, state_channel_space_0, reward_space_0, reward_list_0),
     #             (1, dqn_1, state_loc_space_1, state_channel_space_1, reward_space_1, reward_list_1),
     #             (2, dqn_2, state_loc_space_2, state_channel_space_2, reward_space_2, reward_list_2),
@@ -239,6 +267,8 @@ def main():
     print("Collecting Experience....")
     for i in range(len(reward_space_6)):
         reward_space_6[i] = minmaxscaler(reward_space_6[i])
+    for j in range(len(reward_space_val_6)):
+        reward_space_val_6[j] = minmaxscaler(reward_space_val_6[j])
 
     process_every_network(6, dqn_6, state_loc_space_6, state_channel_space_6, reward_space_6, label_space_6, reward_list_6,)
   
@@ -268,20 +298,62 @@ def main():
 
     print('All subprocesses done')
 
-    # torch.save({'eval_net':self.eval_net, 'target_net':self.target_net, 'optim':self.optimizer},'/DQN_3p5_60.pkl')
+    #test the network
+    num_total_reward = 0
+    num_find_stay_reward = 0
+    num_not_find =0
+    for index_user_val in range(len(state_loc_space_val_6)):
+        loc_zero = state_loc_space_val_6[index_user_val].reshape(1,3)
+        channel_zero = state_channel_space_val_6[index_user_val].reshape(1,256)
+        ob_zero = np.hstack((loc_zero, channel_zero))
+        action_zero = np.random.randint(0,NUM_ACTIONS)
+        reward_zero = reward_space_val_6[index_user_val][action_zero]
+        reaction_zero = np.hstack((action_zero, reward_zero)).reshape(1,2)
+        state_0 = np.hstack((ob_zero, reaction_zero))
+        # 第一次尝试
+        action_1 = dqn_6.choose_action(state_0)
+        reward_1 = reward_func(index_user_val, reward_space_val_6, action_1)
+        reaction_1 = np.hstack((action_1, reward_1)).reshape(1,2)
+        state_1 = np.hstack((ob_zero, reaction_1))
+        # 第二次尝试
+        action_2 = dqn_6.choose_action(state_1)
+        reward_2 = reward_func(index_user_val, reward_space_val_6, action_2)
+        reaction_2 = np.hstack((action_2, reward_2)).reshape(1,2)
+        state_2 = np.hstack((ob_zero, reaction_2))
+        # 第三次尝试
+        action_3 = dqn_6.choose_action(state_2)
+        reward_3 = reward_func(index_user_val, reward_space_val_6, action_3)
+        print(reward_1, reward_2, reward_3)
+        total_reward = reward_1 + reward_2 + reward_3
+        if total_reward == 3 :
+            num_total_reward += 1
+        elif  reward_1 < 1 and reward_2 ==1 and reward_3 ==1 :
+            num_find_stay_reward += 1
+        elif  reward_3 < 1:
+            num_not_find += 1
+
+    total_reward_rate = num_total_reward/len(state_loc_space_val_6)
+    find_stay_reward_rate = num_find_stay_reward/len(state_loc_space_val_6)
+    just_find_rate = (len(state_loc_space_val_6) - num_not_find)/len(state_loc_space_val_6)
+    
+    print("total_reward_rate:{}, find_stay_reward_rate:{}, just_find_rate:{}".format(total_reward_rate, find_stay_reward_rate, just_find_rate ))
+
     plt.title('Result Analysis')
-    plt.plot(reward_list_0, 'g-', label='agent_0_regret')
-    plt.plot(regret_list_1, 'r-', label='agent_1_regret')
-    plt.plot(regret_list_2, 'k-', label='agent_2_regret')
-    plt.plot(regret_list_3, 'b-', label='agent_3_regret')
-    plt.plot(regret_list_4, 'y-', label='agent_4_regret')
-    plt.plot(regret_list_5, 'c-', label='agent_5_regret')
-    plt.plot(regret_list_6, 'm-', label='agent_6_regret')
-    plt.plot(regret_list_7, 'p-', label='agent_7_regret')
+    # plt.plot(reward_list_0, 'g-', label='agent_0_regret')
+    # plt.plot(regret_list_1, 'r-', label='agent_1_regret')
+    # plt.plot(regret_list_2, 'k-', label='agent_2_regret')
+    # plt.plot(regret_list_3, 'b-', label='agent_3_regret')
+    # plt.plot(regret_list_4, 'y-', label='agent_4_regret')
+    # plt.plot(regret_list_5, 'c-', label='agent_5_regret')
+    # plt.plot(regret_list_7, 'p-', label='agent_7_regret')
+    plt.subplot(2,1,1)
+    plt.plot(loss_list_val, 'm-', label='val_loss')
+    plt.subplot(2,1,2)
+    plt.plot(Loss_list_train, 'r-', label= 'loss')
     plt.legend()
     plt.savefig('result.jpg')
     plt.show()
-    torch.save({'eval_net':self.eval_net, 'target_net':self.target_net, 'optim':self.optimizer},'/DQN_3p5_60.pkl')
+    torch.save({'eval_net': dqn_6.eval_net, 'target_net': dqn_6.target_net, 'optim':dqn_6.optimizer},'/DQN_3p5_60.pkl')
         
 
 if __name__ == '__main__':
